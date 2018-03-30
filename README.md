@@ -45,6 +45,7 @@ You can use trained model from [original BiDAF code](https://github.com/allenai/
 Finetune the model on WikiQA / Semeval.
 ```
 chmod +x train.sh; ./train.sh DATA finetune RUN_ID PRETR_FROM STEP
+chmod +x train.sh; ./train.sh wikiqa finetune 0001 basic 20000
 ```
 - `DATA`: [`wikiqa` | `semeval]`
 - `RUN_ID`: run id for finetuning. use unique run id for the same data.
@@ -54,6 +55,7 @@ chmod +x train.sh; ./train.sh DATA finetune RUN_ID PRETR_FROM STEP
 Finally, evaluate your model.
 ```
 chmod +x evaluate.sh; ./evaluate.sh DATA RUN_ID START_STEP END_STEP
+chmod +x evaluate.sh; ./evaluate.sh wikiqa 0001 20200 25000
 ```
 - `DATA`: [`wikiqa` | `semeval`]
 - `RUN_ID`: run_id you used for finetuning
