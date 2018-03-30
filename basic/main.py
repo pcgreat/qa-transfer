@@ -2,18 +2,15 @@ import argparse
 import json
 import math
 import os
-import shutil
 from pprint import pprint
 
-import tensorflow as tf
 from tqdm import tqdm
-import numpy as np
 
 from basic.evaluator import *
 from basic.graph_handler import GraphHandler
 from basic.model import get_multi_gpu_models
-from basic.trainer import MultiGPUTrainer
 from basic.read_data import read_data, get_squad_data_filter, update_config
+from basic.trainer import MultiGPUTrainer
 
 
 def main(config):
@@ -32,7 +29,7 @@ def main(config):
 def set_dirs(config):
     # create directories
     assert config.load or config.mode == 'train', "config.load must be True if not training"
-    #if not config.load and os.path.exists(config.out_dir):
+    # if not config.load and os.path.exists(config.out_dir):
     #    shutil.rmtree(config.out_dir)
 
     config.save_dir = os.path.join(config.out_dir, "save")
@@ -77,7 +74,7 @@ def _train(config):
                         for idx in range(config.word_vocab_size)])
     config.emb_mat = emb_mat
     # construct model graph and variables (using default graph)
-    pprint(config.__flags, indent=2)
+    pprint(config, indent=2)
     models = get_multi_gpu_models(config)
     model = models[0]
     trainer = MultiGPUTrainer(config, models)
@@ -89,16 +86,19 @@ def _train(config):
         ThisEvaluator = UnionEvaluator
 
     evaluator = ThisEvaluator(config, models, tensor_dict=model.tensor_dict if config.vis else None)
-    graph_handler = GraphHandler(config, model)  # controls all tensors and variables in the graph, including loading /saving
+    graph_handler = GraphHandler(config,
+                                 model)  # controls all tensors and variables in the graph, including loading /saving
     sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
 
     graph_handler.initialize(sess)
     # Begin training
-    num_steps = config.num_steps or int(math.ceil(train_data.num_examples / (config.batch_size * config.num_gpus))) * config.num_epochs
+    num_steps = config.num_steps or int(
+        math.ceil(train_data.num_examples / (config.batch_size * config.num_gpus))) * config.num_epochs
     global_step = 0
 
     for batches in tqdm(train_data.get_multi_batches(config.batch_size, config.num_gpus,
-                                                     num_steps=num_steps, shuffle=True, cluster=config.cluster), total=num_steps):
+                                                     num_steps=num_steps, shuffle=True, cluster=config.cluster),
+                        total=num_steps):
         global_step = sess.run(model.global_step) + 1  # +1 because all calculations are done after step
         get_summary = global_step % config.log_period == 0
         loss, summary, train_op = trainer.step(sess, batches, get_summary=get_summary)
@@ -123,7 +123,8 @@ def _train(config):
             graph_handler.add_summaries(e_train.summaries, global_step)
             """
             e_dev = evaluator.get_evaluation_from_batches(
-                sess, tqdm(dev_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps), total=num_steps))
+                sess, tqdm(dev_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps),
+                           total=num_steps))
             graph_handler.add_summaries(e_dev.summaries, global_step)
             if config.dump_eval:
                 graph_handler.dump_eval(e_dev)
@@ -147,10 +148,10 @@ def _test(config):
         new_emb_mat = np.array([idx2vec_dict[idx] for idx in range(len(idx2vec_dict))], dtype='float32')
         config.new_emb_mat = new_emb_mat
 
-    pprint(config.__flags, indent=2)
+    pprint(config, indent=2)
     models = get_multi_gpu_models(config)
     model = models[0]
-    
+
     if config.model_name == 'basic':
         ThisEvaluator = MultiGPUF1Evaluator
     elif config.model_name in ['basic-class', 'basic-generate']:
@@ -165,7 +166,8 @@ def _test(config):
         num_steps = config.test_num_batches
 
     e = None
-    for multi_batch in tqdm(test_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps, cluster=config.cluster), total=num_steps):
+    for multi_batch in tqdm(test_data.get_multi_batches(config.batch_size, config.num_gpus, num_steps=num_steps,
+                                                        cluster=config.cluster), total=num_steps):
         ei = evaluator.get_evaluation(sess, multi_batch)
         e = ei if e is None else e + ei
         if config.vis:
@@ -198,11 +200,12 @@ def _forward(config):
         new_emb_mat = np.array([idx2vec_dict[idx] for idx in range(len(idx2vec_dict))], dtype='float32')
         config.new_emb_mat = new_emb_mat
 
-    pprint(config.__flags, indent=2)
+    pprint(config, indent=2)
     models = get_multi_gpu_models(config)
     model = models[0]
     evaluator = ForwardEvaluator(config, model)
-    graph_handler = GraphHandler(config, model)  # controls all tensors and variables in the graph, including loading /saving
+    graph_handler = GraphHandler(config,
+                                 model)  # controls all tensors and variables in the graph, including loading /saving
 
     sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
     graph_handler.initialize(sess)
@@ -210,7 +213,9 @@ def _forward(config):
     num_batches = math.ceil(test_data.num_examples / config.batch_size)
     if 0 < config.test_num_batches < num_batches:
         num_batches = config.test_num_batches
-    e = evaluator.get_evaluation_from_batches(sess, tqdm(test_data.get_batches(config.batch_size, num_batches=num_batches), total=num_batches))
+    e = evaluator.get_evaluation_from_batches(sess,
+                                              tqdm(test_data.get_batches(config.batch_size, num_batches=num_batches),
+                                                   total=num_batches))
     print(e)
     if config.dump_answer:
         print("dumping answer ...")

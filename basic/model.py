@@ -1,11 +1,12 @@
-import random
 import itertools
+import random
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.ops.rnn_cell import BasicLSTMCell
 
 from basic.read_data import DataSet
-from my.tensorflow import get_initializer, exp_mask
+from my.tensorflow import get_initializer
 from my.tensorflow.nn import linear, softsel, get_logits, highway_network, multi_conv1d
 from my.tensorflow.rnn import bidirectional_dynamic_rnn
 from my.tensorflow.rnn_cell import SwitchableDropoutWrapper, AttentionCell
@@ -15,19 +16,21 @@ def get_multi_gpu_models(config):
     models = []
 
     for gpu_idx in range(config.num_gpus):
-        with tf.name_scope("model_{}".format(gpu_idx)) as scope, tf.device("/{}:{}".format(config.device_type, gpu_idx)):
+        with tf.name_scope("model_{}".format(gpu_idx)) as scope, tf.device(
+                "/{}:{}".format(config.device_type, gpu_idx)):
             model = Model(config, scope, rep=gpu_idx == 0)
             tf.get_variable_scope().reuse_variables()
             models.append(model)
     return models
+
 
 class Model(object):
     def __init__(self, config, scope, rep=True):
         self.scope = scope
         self.config = config
         self.global_step = tf.get_variable('global_step', shape=[], dtype='int32',
-                       initializer=tf.constant_initializer(0), trainable=False)
-        
+                                           initializer=tf.constant_initializer(0), trainable=False)
+
         # Define forward inputs here
         N, M, JX, JQ, VW, VC, W = \
             config.batch_size, config.max_num_sents, config.max_sent_size, \
@@ -45,7 +48,7 @@ class Model(object):
             self.y_mask = tf.placeholder('bool', [N], name='y_mask')
         if config.model_name == 'basic-class':
             self.y0 = tf.placeholder('float', [N, None, C], name='y')
-        
+
         self.is_train = tf.placeholder('bool', [], name='is_train')
         self.new_emb_mat = tf.placeholder('float', [None, config.word_emb_size], name='new_emb_mat')
 
@@ -69,8 +72,8 @@ class Model(object):
         if config.mode == 'train':
             self._build_ema()
 
-        self.summary = tf.merge_all_summaries()
-        self.summary = tf.merge_summary(tf.get_collection("summaries", scope=self.scope)) # remove scope=self.scope
+        self.summary = tf.summary.merge_all()
+        self.summary = tf.summary.merge(tf.get_collection("summaries", scope=self.scope))  # remove scope=self.scope
 
     def _build_forward(self):
         config = self.config
@@ -97,23 +100,27 @@ class Model(object):
                     heights = list(map(int, config.filter_heights.split(',')))
                     assert sum(filter_sizes) == dco, (filter_sizes, dco)
                     with tf.variable_scope("conv"):
-                        xx = multi_conv1d(Acx, filter_sizes, heights, "VALID",  self.is_train, config.keep_prob, scope="xx")
+                        xx = multi_conv1d(Acx, filter_sizes, heights, "VALID", self.is_train, config.keep_prob,
+                                          scope="xx")
                         if config.share_cnn_weights:
                             tf.get_variable_scope().reuse_variables()
-                            qq = multi_conv1d(Acq, filter_sizes, heights, "VALID", self.is_train, config.keep_prob, scope="xx")
+                            qq = multi_conv1d(Acq, filter_sizes, heights, "VALID", self.is_train, config.keep_prob,
+                                              scope="xx")
                         else:
-                            qq = multi_conv1d(Acq, filter_sizes, heights, "VALID", self.is_train, config.keep_prob, scope="qq")
+                            qq = multi_conv1d(Acq, filter_sizes, heights, "VALID", self.is_train, config.keep_prob,
+                                              scope="qq")
                         xx = tf.reshape(xx, [-1, M, JX, dco])
                         qq = tf.reshape(qq, [-1, JQ, dco])
 
             if config.use_word_emb:
                 with tf.variable_scope("emb_var"), tf.device("/cpu:0"):
                     if config.mode == 'train':
-                        word_emb_mat = tf.get_variable("word_emb_mat", dtype='float', shape=[VW, dw], initializer=get_initializer(config.emb_mat))
+                        word_emb_mat = tf.get_variable("word_emb_mat", dtype='float', shape=[VW, dw],
+                                                       initializer=get_initializer(config.emb_mat))
                     else:
                         word_emb_mat = tf.get_variable("word_emb_mat", shape=[VW, dw], dtype='float')
                     if config.use_glove_for_unk:
-                        word_emb_mat = tf.concat(0, [word_emb_mat, self.new_emb_mat])
+                        word_emb_mat = tf.concat([word_emb_mat, self.new_emb_mat], 0)
 
                 with tf.name_scope("word"):
                     Ax = tf.nn.embedding_lookup(word_emb_mat, self.x)  # [N, M, JX, d]
@@ -121,12 +128,11 @@ class Model(object):
                     self.tensor_dict['x'] = Ax
                     self.tensor_dict['q'] = Aq
                 if config.use_char_emb:
-                    xx = tf.concat(3, [xx, Ax])  # [N, M, JX, di]
-                    qq = tf.concat(2, [qq, Aq])  # [N, JQ, di]
+                    xx = tf.concat([xx, Ax], 3)  # [N, M, JX, di]
+                    qq = tf.concat([qq, Aq], 2)  # [N, JQ, di]
                 else:
                     xx = Ax
                     qq = Aq
-
 
         # highway network
         if config.highway:
@@ -138,21 +144,39 @@ class Model(object):
         self.tensor_dict['xx'] = xx
         self.tensor_dict['qq'] = qq
 
-        cell = BasicLSTMCell(d, state_is_tuple=True)
-        d_cell = SwitchableDropoutWrapper(cell, self.is_train, input_keep_prob=config.input_keep_prob)
+        cell_fw = BasicLSTMCell(d, state_is_tuple=True)
+        cell_bw = BasicLSTMCell(d, state_is_tuple=True)
+        d_cell_fw = SwitchableDropoutWrapper(cell_fw, self.is_train, input_keep_prob=config.input_keep_prob)
+        d_cell_bw = SwitchableDropoutWrapper(cell_bw, self.is_train, input_keep_prob=config.input_keep_prob)
+        cell2_fw = BasicLSTMCell(d, state_is_tuple=True)
+        cell2_bw = BasicLSTMCell(d, state_is_tuple=True)
+        d_cell2_fw = SwitchableDropoutWrapper(cell2_fw, self.is_train, input_keep_prob=config.input_keep_prob)
+        d_cell2_bw = SwitchableDropoutWrapper(cell2_bw, self.is_train, input_keep_prob=config.input_keep_prob)
+        cell3_fw = BasicLSTMCell(d, state_is_tuple=True)
+        cell3_bw = BasicLSTMCell(d, state_is_tuple=True)
+        d_cell3_fw = SwitchableDropoutWrapper(cell3_fw, self.is_train, input_keep_prob=config.input_keep_prob)
+        d_cell3_bw = SwitchableDropoutWrapper(cell3_bw, self.is_train, input_keep_prob=config.input_keep_prob)
+        cell4_fw = BasicLSTMCell(d, state_is_tuple=True)
+        cell4_bw = BasicLSTMCell(d, state_is_tuple=True)
+        d_cell4_fw = SwitchableDropoutWrapper(cell4_fw, self.is_train, input_keep_prob=config.input_keep_prob)
+        d_cell4_bw = SwitchableDropoutWrapper(cell4_bw, self.is_train, input_keep_prob=config.input_keep_prob)
         x_len = tf.reduce_sum(tf.cast(self.x_mask, 'int32'), 2)  # [N, M]
         q_len = tf.reduce_sum(tf.cast(self.q_mask, 'int32'), 1)  # [N]
 
         with tf.variable_scope("prepro"):
-            (fw_u, bw_u), ((_, fw_u_f), (_, bw_u_f)) = bidirectional_dynamic_rnn(d_cell, d_cell, qq, q_len, dtype='float', scope='u1')  # [N, J, d], [N, d]
-            u = tf.concat(2, [fw_u, bw_u])
+            (fw_u, bw_u), ((_, fw_u_f), (_, bw_u_f)) = bidirectional_dynamic_rnn(d_cell_fw, d_cell_bw, qq, q_len,
+                                                                                 dtype='float',
+                                                                                 scope='u1')  # [N, J, d], [N, d]
+            u = tf.concat(axis=2, values=[fw_u, bw_u])
             if config.share_lstm_weights:
                 tf.get_variable_scope().reuse_variables()
-                (fw_h, bw_h), _ = bidirectional_dynamic_rnn(cell, cell, xx, x_len, dtype='float', scope='u1')  # [N, M, JX, 2d]
-                h = tf.concat(3, [fw_h, bw_h])  # [N, M, JX, 2d]
+                (fw_h, bw_h), _ = bidirectional_dynamic_rnn(cell_fw, cell_bw, xx, x_len, dtype='float',
+                                                            scope='u1')  # [N, M, JX, 2d]
+                h = tf.concat(axis=3, values=[fw_h, bw_h])  # [N, M, JX, 2d]
             else:
-                (fw_h, bw_h), _ = bidirectional_dynamic_rnn(cell, cell, xx, x_len, dtype='float', scope='h1')  # [N, M, JX, 2d]
-                h = tf.concat(3, [fw_h, bw_h])  # [N, M, JX, 2d]
+                (fw_h, bw_h), _ = bidirectional_dynamic_rnn(cell_fw, cell_bw, xx, x_len, dtype='float',
+                                                            scope='h1')  # [N, M, JX, 2d]
+                h = tf.concat(axis=3, values=[fw_h, bw_h])  # [N, M, JX, 2d]
             self.tensor_dict['u'] = u
             self.tensor_dict['h'] = h
 
@@ -161,35 +185,47 @@ class Model(object):
                 p0 = h
                 u = tf.reshape(tf.tile(tf.expand_dims(u, 1), [1, M, 1, 1]), [N * M, JQ, 2 * d])
                 q_mask = tf.reshape(tf.tile(tf.expand_dims(self.q_mask, 1), [1, M, 1]), [N * M, JQ])
-                first_cell = AttentionCell(cell, u, mask=q_mask, mapper='sim',
-                                       input_keep_prob=self.config.input_keep_prob, is_train=self.is_train)
+                first_cell_fw = AttentionCell(cell2_fw, u, mask=q_mask, mapper='sim',
+                                              input_keep_prob=self.config.input_keep_prob, is_train=self.is_train)
+                first_cell_bw = AttentionCell(cell2_bw, u, mask=q_mask, mapper='sim',
+                                              input_keep_prob=self.config.input_keep_prob, is_train=self.is_train)
+                second_cell_fw = AttentionCell(cell3_fw, u, mask=q_mask, mapper='sim',
+                                               input_keep_prob=self.config.input_keep_prob, is_train=self.is_train)
+                second_cell_bw = AttentionCell(cell3_bw, u, mask=q_mask, mapper='sim',
+                                               input_keep_prob=self.config.input_keep_prob, is_train=self.is_train)
             else:
-                p0 = attention_layer(config, self.is_train, h, u, h_mask=self.x_mask, u_mask=self.q_mask, scope="p0", tensor_dict=self.tensor_dict)
-                first_cell = d_cell
-            self.p = p0
-            (fw_g0, bw_g0), _ = bidirectional_dynamic_rnn(first_cell, first_cell, p0, x_len, dtype='float', scope='g0')  # [N, M, JX, 2d]
-            g0 = tf.concat(3, [fw_g0, bw_g0])
-            (fw_g1, bw_g1), _ = bidirectional_dynamic_rnn(first_cell, first_cell, g0, x_len, dtype='float', scope='g1')  # [N, M, JX, 2d]
-            g1 = tf.concat(3, [fw_g1, bw_g1])
+                p0 = attention_layer(config, self.is_train, h, u, h_mask=self.x_mask, u_mask=self.q_mask, scope="p0",
+                                     tensor_dict=self.tensor_dict)
+                first_cell_fw = d_cell2_fw
+                second_cell_fw = d_cell3_fw
+                first_cell_bw = d_cell2_bw
+                second_cell_bw = d_cell3_bw
+
+            (fw_g0, bw_g0), _ = bidirectional_dynamic_rnn(first_cell_fw, first_cell_bw, p0, x_len, dtype='float',
+                                                          scope='g0')  # [N, M, JX, 2d]
+            g0 = tf.concat(axis=3, values=[fw_g0, bw_g0])
+            (fw_g1, bw_g1), _ = bidirectional_dynamic_rnn(second_cell_fw, second_cell_bw, g0, x_len, dtype='float',
+                                                          scope='g1')  # [N, M, JX, 2d]
+            g1 = tf.concat(axis=3, values=[fw_g1, bw_g1])
 
         with tf.variable_scope("output"):
             if config.model_name == "basic":
-                logits = get_logits([g1, p0], d, True, wd=config.wd, \
-                        input_keep_prob=config.input_keep_prob,
-                        mask=self.x_mask, is_train=self.is_train, \
-                        func=config.answer_func, scope='logits1')
-                a1i = softsel(tf.reshape(g1, [N, M * JX, 2 * d]), \
-                        tf.reshape(logits, [N, M * JX]))
-                a1i = tf.tile(tf.expand_dims(tf.expand_dims(a1i, 1), 1), \
-                        [1, M, JX, 1])
-                (fw_g2, bw_g2), _ = bidirectional_dynamic_rnn(d_cell, d_cell, \
-                        tf.concat(3, [p0, g1, a1i, g1 * a1i]),
-                        x_len, dtype='float', scope='g2')  # [N, M, JX, 2d]
-                g2 = tf.concat(3, [fw_g2, bw_g2])
-                logits2 = get_logits([g2, p0], d, True, wd=config.wd, \
-                        input_keep_prob=config.input_keep_prob, mask=self.x_mask,
-                        is_train=self.is_train, func=config.answer_func,
-                        scope='logits2')
+                logits = get_logits([g1, p0], d, True, wd=config.wd,
+                                    input_keep_prob=config.input_keep_prob,
+                                    mask=self.x_mask, is_train=self.is_train,
+                                    func=config.answer_func, scope='logits1')
+                a1i = softsel(tf.reshape(g1, [N, M * JX, 2 * d]),
+                              tf.reshape(logits, [N, M * JX]))
+                a1i = tf.tile(tf.expand_dims(tf.expand_dims(a1i, 1), 1),
+                              [1, M, JX, 1])
+                (fw_g2, bw_g2), _ = bidirectional_dynamic_rnn(d_cell4_fw, d_cell4_bw,
+                                                              tf.concat([p0, g1, a1i, g1 * a1i], 3),
+                                                              x_len, dtype='float', scope='g2')  # [N, M, JX, 2d]
+                g2 = tf.concat([fw_g2, bw_g2], 3)
+                logits2 = get_logits([g2, p0], d, True, wd=config.wd,
+                                     input_keep_prob=config.input_keep_prob, mask=self.x_mask,
+                                     is_train=self.is_train, func=config.answer_func,
+                                     scope='logits2')
                 flat_logits = tf.reshape(logits, [-1, M * JX])
                 flat_yp = tf.nn.softmax(flat_logits)  # [-1, M*JX]
                 yp = tf.reshape(flat_yp, [-1, M, JX])
@@ -210,22 +246,23 @@ class Model(object):
                 (fw_g2, bw_g2) = (fw_g1, bw_g1)
 
                 if config.classifier == 'maxpool':
-                    g2 = tf.concat(3, [fw_g2, bw_g2]) # [N, M, JX, 2d]
-                    g2 = tf.reduce_max(g2, 2) # [N, M, 2d]
-                    g2_dim = 2*d
+                    g2 = tf.concat([fw_g2, bw_g2], 3)  # [N, M, JX, 2d]
+                    g2 = tf.reduce_max(g2, 2)  # [N, M, 2d]
+                    g2_dim = 2 * d
                 elif config.classifier == 'sumpool':
-                    g2 = tf.concat(3, [fw_g2, bw_g2])
+                    g2 = tf.concat([fw_g2, bw_g2], 3)
                     g2 = tf.reduce_sum(g2, 2)
-                    g2_dim = 2*d
+                    g2_dim = 2 * d
                 else:
-                    fw_g2_ = tf.gather(tf.transpose(fw_g2, [2, 0, 1, 3]), JX-1)
+                    fw_g2_ = tf.gather(tf.transpose(fw_g2, [2, 0, 1, 3]), JX - 1)
                     bw_g2_ = tf.gather(tf.transpose(bw_g2, [2, 0, 1, 3]), 0)
-                    g2 = tf.concat(2, [fw_g2_, bw_g2_])
-                    g2_dim = 2*d
+                    g2 = tf.concat([fw_g2_, bw_g2_], 2)
+                    g2_dim = 2 * d
 
                 g2_ = tf.reshape(g2, [N, g2_dim])
 
-                logits0 = linear(g2_, C, True, wd=config.wd, input_keep_prob=config.input_keep_prob, is_train=self.is_train, scope='classifier')
+                logits0 = linear(g2_, C, True, wd=config.wd, input_keep_prob=config.input_keep_prob,
+                                 is_train=self.is_train, scope='classifier')
                 flat_yp0 = tf.nn.softmax(logits0)
                 yp0 = tf.reshape(flat_yp0, [N, M, C])
                 self.tensor_dict['g1'] = g1
@@ -244,34 +281,33 @@ class Model(object):
 
         if is_basic:
             loss_mask = tf.reduce_max(tf.cast(self.q_mask, 'float'), 1)
-            #span_mask = tf.cast(self.y_mask, 'float')
+            # span_mask = tf.cast(self.y_mask, 'float')
 
-            y = tf.cast(tf.reshape(self.y, [N, M*JX]), 'float')
-            losses = tf.nn.softmax_cross_entropy_with_logits(self.logits, y)
-            #ce_loss = tf.reduce_mean(losses * loss_mask * span_mask)
+            y = tf.cast(tf.reshape(self.y, [N, M * JX]), 'float')
+            losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.logits, labels=y)
+            # ce_loss = tf.reduce_mean(losses * loss_mask * span_mask)
             ce_loss = tf.reduce_mean(loss_mask * losses)
             tf.add_to_collection('losses', ce_loss)
-            y2 = tf.cast(tf.reshape(self.y2, [N, M*JX]), 'float')
-            #ce_loss2 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits( \
+            y2 = tf.cast(tf.reshape(self.y2, [N, M * JX]), 'float')
+            # ce_loss2 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits( \
             #            self.logits2, y) * loss_mask * span_mask )
-            ce_loss2 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits( self.logits2, y2))
+            ce_loss2 = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.logits2, labels=y2))
             tf.add_to_collection("losses", ce_loss2)
             self.loss_span1 = ce_loss
             self.loss_span2 = ce_loss2
 
         if is_class:
-
             C = 3 if config.data_dir.startswith('data/snli') else 2
-            loss_mask = tf.reduce_max(tf.cast(self.q_mask, 'float'), 1) #[N]
-            y0 = tf.cast(tf.reshape(self.y0, [N, M*C]), 'float')
-            losses0 = tf.nn.softmax_cross_entropy_with_logits(self.logits0, y0)
+            loss_mask = tf.reduce_max(tf.cast(self.q_mask, 'float'), 1)  # [N]
+            y0 = tf.cast(tf.reshape(self.y0, [N, M * C]), 'float')
+            losses0 = tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.logits0, labels=y0)
             ce_loss0 = tf.reduce_mean(loss_mask * losses0)
             tf.add_to_collection('losses', ce_loss0)
             self.loss_class = ce_loss0
 
         losses_collection = tf.get_collection('losses', scope=self.scope)
         self.loss = tf.add_n(losses_collection, name='loss')
-        tf.scalar_summary(self.loss.op.name, self.loss)
+        tf.summary.scalar(self.loss.op.name, self.loss)
         tf.add_to_collection('ema/scalar', self.loss)
 
     def _build_ema(self):
@@ -281,10 +317,10 @@ class Model(object):
         ema_op = ema.apply(tensors)
         for var in tf.get_collection("ema/scalar", scope=self.scope):
             ema_var = ema.average(var)
-            tf.scalar_summary(ema_var.op.name, ema_var)
+            tf.summary.scalar(ema_var.op.name, ema_var)
         for var in tf.get_collection("ema/vector", scope=self.scope):
             ema_var = ema.average(var)
-            tf.histogram_summary(ema_var.op.name, ema_var)
+            tf.summary.histogram(ema_var.op.name, ema_var)
 
         with tf.control_dependencies([ema_op]):
             self.loss = tf.identity(self.loss)
@@ -314,7 +350,7 @@ class Model(object):
         vars_ = []
         for prefix in prefixs:
             vars_ += tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, prefix)
-        return vars_ #self.var_list
+        return vars_  # self.var_list
 
     def get_feed_dict(self, batch, is_train, supervised=True):
         assert isinstance(batch, DataSet)
@@ -322,7 +358,7 @@ class Model(object):
         N, M, JX, JQ, VW, VC, d, W = \
             config.batch_size, config.max_num_sents, config.max_sent_size, \
             config.max_ques_size, config.word_vocab_size, config.char_vocab_size, \
-                config.hidden_size, config.max_word_size
+            config.hidden_size, config.max_word_size
         feed_dict = {}
         if config.len_opt:
             """
@@ -392,12 +428,14 @@ class Model(object):
                     j, k = 0, k + offset
                     offset = sum(map(len, xi[:j2]))
                     j2, k2 = 0, k2 + offset
-                if k>=JX: (k, k2) = (0, 1)
-                elif k2>=JX: k2=JX
+                if k >= JX:
+                    (k, k2) = (0, 1)
+                elif k2 >= JX:
+                    k2 = JX
                 y[i, j, k] = True
-                y2[i, j2, k2-1] = True
+                y2[i, j2, k2 - 1] = True
                 y_mask[i] = True
- 
+
         if supervised and is_class:
 
             C = 3 if config.data_dir.startswith('data/snli') else 2
@@ -406,16 +444,18 @@ class Model(object):
 
             for i, (xi, cxi, yi) in enumerate(zip(X, CX, batch.data['y'])):
                 if config.data_dir.startswith('data/semeval'):
-                    if yi==0: y0[i, 0, 1] = 1
-                    elif yi==2: y0[i, 0, 0] = 1
+                    if yi == 0:
+                        y0[i, 0, 1] = 1
+                    elif yi == 2:
+                        y0[i, 0, 0] = 1
                     else:
                         y0[i, 0, 0] = 0.5
                         y0[i, 0, 1] = 0.5
                     continue
-                if C==3:
+                if C == 3:
                     k = yi
                 else:
-                    assert len(yi)==1
+                    assert len(yi) == 1
                     k = int(yi[0])
                 y0[i, 0, k] = 1.0
 
@@ -508,7 +548,7 @@ def bi_attention(config, is_train, h, u, h_mask=None, u_mask=None, scope=None, t
             a_h = tf.nn.softmax(tf.reduce_max(u_logits, 3))
             tensor_dict['a_u'] = a_u
             tensor_dict['a_h'] = a_h
-            variables = tf.get_collection(tf.GraphKeys.VARIABLES, scope=tf.get_variable_scope().name)
+            variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=tf.get_variable_scope().name)
             for var in variables:
                 tensor_dict[var.name] = var
 
@@ -525,7 +565,7 @@ def attention_layer(config, is_train, h, u, h_mask=None, u_mask=None, scope=None
         if not config.c2q_att:
             u_a = tf.tile(tf.expand_dims(tf.expand_dims(tf.reduce_mean(u, 1), 1), 1), [1, M, JX, 1])
         if config.q2c_att:
-            p0 = tf.concat(3, [h, u_a, h * u_a, h * h_a])
+            p0 = tf.concat([h, u_a, h * u_a, h * h_a], 3)
         else:
-            p0 = tf.concat(3, [h, u_a, h * u_a])
+            p0 = tf.concat([h, u_a, h * u_a], 3)
         return p0

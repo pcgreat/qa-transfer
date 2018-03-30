@@ -83,7 +83,7 @@ def average_gradients(tower_grads):
             grads.append(expanded_g)
 
         # Average over the 'tower' dimension.
-        grad = tf.concat(0, grads)
+        grad = tf.concat( grads, axis=0)
         grad = tf.reduce_mean(grad, 0)
 
         # Keep in mind that the Variables are redundant because they are shared
@@ -98,7 +98,7 @@ def average_gradients(tower_grads):
 def mask(val, mask, name=None):
     if name is None:
         name = 'mask'
-    return tf.mul(val, tf.cast(mask, 'float'), name=name)
+    return tf.matmul(val, tf.cast(mask, 'float'), name=name)
 
 
 def exp_mask(val, mask, name=None):
@@ -146,7 +146,7 @@ def add_wd(wd, scope=None):
     variables = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope)
     with tf.name_scope("weight_decay"):
         for var in variables:
-            weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name="{}/wd".format(var.op.name))
+            weight_decay = tf.matmul(tf.nn.l2_loss(var), wd, name="{}/wd".format(var.op.name))
             tf.add_to_collection('losses', weight_decay)
 
 

@@ -108,13 +108,34 @@ flags.DEFINE_bool("q2c_att", True, "question-to-context attention? [True]")
 flags.DEFINE_bool("c2q_att", True, "context-to-question attention? [True]")
 flags.DEFINE_bool("dynamic_att", False, "Dynamic attention [False]")
 
+# dynamically update
+flags.DEFINE_string("save_dir", "", "")
+flags.DEFINE_string("log_dir", "", "")
+flags.DEFINE_string("eval_dir", "", "")
+flags.DEFINE_string("answer_dir", "", "")
+flags.DEFINE_integer("max_num_sents", 0, "")
+flags.DEFINE_integer("max_sent_size", 0, "")
+flags.DEFINE_integer("max_ques_size", 0, "")
+flags.DEFINE_integer("max_word_size", 0, "")
+flags.DEFINE_integer("max_para_size", 0, "")
+flags.DEFINE_integer("char_vocab_size", 0, "")
+flags.DEFINE_integer("word_emb_size", 0, "")
+flags.DEFINE_integer("word_vocab_size", 0, "")
+
+
+class AttrDict(dict):
+    def __init__(self, *args, **kwargs):
+        super(AttrDict, self).__init__(*args, **kwargs)
+        self.__dict__ = self
+
 
 def main(_):
-    config = flags.FLAGS
-
-    config.out_dir = os.path.join(config.out_base_dir, config.model_name, str(config.run_id).zfill(2))
-
+    config_dic = flags.FLAGS.flag_values_dict()
+    config_dic["out_dir"] = os.path.join(flags.FLAGS.out_base_dir, flags.FLAGS.model_name,
+                                         str(flags.FLAGS.run_id).zfill(2))
+    config = AttrDict(config_dic)
     m(config)
+
 
 if __name__ == "__main__":
     tf.app.run()

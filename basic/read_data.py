@@ -1,15 +1,16 @@
+import itertools
 import json
+import math
 import os
 import random
-import itertools
-import math
 from collections import defaultdict
 
 import numpy as np
 
+from basic.create_shared import create_shared
 from my.tensorflow import grouper
 from my.utils import index
-from basic.create_shared import create_shared
+
 
 class Data(object):
     def get_size(self):

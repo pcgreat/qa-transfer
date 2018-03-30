@@ -1,13 +1,12 @@
 import gzip
 import json
-from json import encoder
 import os
+import pickle
+
 import tensorflow as tf
 
-from basic.evaluator import Evaluation, F1Evaluation
+from basic.evaluator import Evaluation
 from my.utils import short_floats
-
-import pickle
 
 
 class GraphHandler(object):
@@ -19,12 +18,12 @@ class GraphHandler(object):
         self.save_path = os.path.join(config.save_dir, config.model_name)
 
     def initialize(self, sess):
-        sess.run(tf.initialize_all_variables())
+        sess.run(tf.global_variables_initializer())
         if self.config.load:
             self._load(sess)
 
         if self.config.mode == 'train':
-            self.writer = tf.train.SummaryWriter(self.config.log_dir, graph=tf.get_default_graph())
+            self.writer = tf.summary.FileWriter(self.config.log_dir, graph=tf.get_default_graph())
 
     def save(self, sess, global_step=None):
         saver = tf.train.Saver(max_to_keep=self.config.max_to_keep)
@@ -36,7 +35,7 @@ class GraphHandler(object):
 
         def _filter(name):
             tokens = name.split("/")
-            return len(tokens)==1 or not ('output' in tokens)
+            return len(tokens) == 1 or not ('output' in tokens)
 
         if self.config.load_trained_model:
             vars_ = {k: v for (k, v) in vars_.items() if _filter(k)}
@@ -51,7 +50,7 @@ class GraphHandler(object):
         saver = tf.train.Saver(vars_, max_to_keep=config.max_to_keep)
 
         if config.load_path:
-            print (config.load_path)
+            print(config.load_path)
             save_path = config.load_path
         elif config.load_step > 0:
             save_path = os.path.join(config.save_dir, "{}-{}".format(config.model_name, config.load_step))
@@ -73,17 +72,19 @@ class GraphHandler(object):
     def dump_eval(self, e, precision=2, path=None):
         assert isinstance(e, Evaluation)
         if self.config.dump_pickle:
-            path = path or os.path.join(self.config.eval_dir, "{}-{}.pklz".format(e.data_type, str(e.global_step).zfill(6)))
+            path = path or os.path.join(self.config.eval_dir,
+                                        "{}-{}.pklz".format(e.data_type, str(e.global_step).zfill(6)))
             with gzip.open(path, 'wb', compresslevel=3) as fh:
                 pickle.dump(e.dict, fh)
         else:
-            path = path or os.path.join(self.config.eval_dir, "{}-{}.json".format(e.data_type, str(e.global_step).zfill(6)))
+            path = path or os.path.join(self.config.eval_dir,
+                                        "{}-{}.json".format(e.data_type, str(e.global_step).zfill(6)))
             with open(path, 'w') as fh:
                 json.dump(short_floats(e.dict, precision), fh)
 
     def dump_answer(self, e, path=None):
         assert isinstance(e, Evaluation)
-        path = path or os.path.join(self.config.answer_dir, "{}-{}.json".format(e.data_type, str(e.global_step).zfill(6)))
+        path = path or os.path.join(self.config.answer_dir,
+                                    "{}-{}.json".format(e.data_type, str(e.global_step).zfill(6)))
         with open(path, 'w') as fh:
             json.dump(e.id2answer_dict, fh)
-

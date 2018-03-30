@@ -1,7 +1,6 @@
 import tensorflow as tf
 
 from basic.model import Model
-from my.tensorflow import average_gradients
 
 
 class Trainer(object):
@@ -9,7 +8,7 @@ class Trainer(object):
         assert isinstance(model, Model)
         self.config = config
         self.model = model
-        self.opt = tf.train.AdadeltaOptimizer(config.init_lr)
+        self.opt = tf.train.GradientDescentOptimizer(config.init_lr)
         self.loss = model.get_loss()
         self.var_list = model.get_var_list()
         self.global_step = model.get_global_step()
@@ -39,7 +38,7 @@ class MultiGPUTrainer(object):
         assert isinstance(model, Model)
         self.config = config
         self.model = model
-        self.opt = tf.train.AdadeltaOptimizer(config.init_lr)
+        opt = tf.train.GradientDescentOptimizer(learning_rate=config.init_lr)
 
         
         self.var_list = model.get_var_list()
@@ -47,18 +46,15 @@ class MultiGPUTrainer(object):
         self.summary = model.summary
         self.models = models
         losses = []
-        grads_list = []
         for gpu_idx, model in enumerate(models):
             with tf.name_scope("grads_{}".format(gpu_idx)), tf.device("/{}:{}".format(config.device_type, gpu_idx)):
                 loss = model.get_loss()
-                grads = self.opt.compute_gradients(loss, var_list=self.var_list)
+                grads = opt.compute_gradients(loss, var_list=self.var_list)
                 #grads = [(tf.clip_by_value(grad, -1., 1.), var) for (grad, var) in grads if not grad is None]
                 losses.append(loss)
-                grads_list.append(grads)
 
         self.loss = tf.add_n(losses)/len(losses)
-        self.grads = average_gradients(grads_list)
-        self.train_op = self.opt.apply_gradients(self.grads, global_step=self.global_step)
+        self.train_op = opt.minimize(self.loss, global_step=self.global_step)
 
     def step(self, sess, batches, get_summary=False):
         assert isinstance(sess, tf.Session)
